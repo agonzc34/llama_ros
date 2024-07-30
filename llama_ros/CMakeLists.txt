@@ -14,6 +14,7 @@ find_package(llama_cpp_vendor REQUIRED)
 find_package(Threads REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(OpenCV REQUIRED)
+find_package(nlohmann_json REQUIRED)
 
 include_directories(
   include
@@ -52,6 +53,7 @@ target_link_libraries(llama_node
   llama_cpp_vendor::common
   ${CMAKE_THREAD_LIBS_INIT}
   Threads::Threads
+  nlohmann_json::nlohmann_json
 )
 ament_target_dependencies(llama_node
   rclcpp

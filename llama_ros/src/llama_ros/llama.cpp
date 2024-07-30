@@ -27,7 +27,9 @@
 
 #include "common.h"
 #include "llama_ros/llama.hpp"
+#include <nlohmann/json.hpp>
 
+using json = nlohmann::ordered_json;
 using namespace llama_ros;
 
 Llama::Llama(std::shared_ptr<struct gpt_params> params, bool debug)
@@ -245,6 +247,39 @@ embeddings_ouput Llama::generate_embeddings(const std::string &input_prompt,
   return output;
 }
 
+// Format given chat. If tmpl is empty, we take the template from model metadata
+inline std::string format_chat(const struct llama_model * model, const std::string & tmpl, const std::vector<json> & messages) {
+    std::vector<llama_chat_msg> chat;
+
+    for (size_t i = 0; i < messages.size(); ++i) {
+        const auto & curr_msg = messages[i];
+
+        std::string role = curr_msg["role"].get<std::string>();
+
+        std::string content;
+        if (curr_msg.contains("content")) {
+            if (curr_msg["content"].is_string()) {
+                content = curr_msg["content"].get<std::string>();
+            } else if (curr_msg["content"].is_array()) {
+                for (const auto & part : curr_msg["content"]) {
+                    if (part.contains("text")) {
+                        content += "\n" + part["text"].get<std::string>();
+                    }
+                }
+            } else {
+                throw std::runtime_error("Invalid 'content' type (ref: https://github.com/ggerganov/llama.cpp/issues/8367)");
+            }
+        } else {
+            throw std::runtime_error("Missing 'content' (ref: https://github.com/ggerganov/llama.cpp/issues/8367)");
+        }
+
+        chat.push_back({role, content});
+    }
+
+    auto formatted_chat = llama_chat_apply_template(model, tmpl, chat, true);
+    return formatted_chat;
+}
+
 /*
 *****************************
 *     GENERATE RESPONSE     *
@@ -272,8 +307,23 @@ response_output Llama::generate_response(const std::string &input_prompt,
 
   // load params
   this->update_sampling_params(this->params->sparams);
-
   // load prompt
+  std::vector<json> messages;
+  json msg1;
+
+  msg1["role"] = "system";
+  msg1["content"] = "You are a helpful assistant.";
+
+  json msg2;
+  msg2["role"] = "user";
+  msg2["content"] = "provide three suggestions about time management";
+
+  messages.push_back(msg1);
+  messages.push_back(msg2);
+
+  auto formatted_chat = format_chat(this->model, "", messages);  
+  LLAMA_LOG_INFO("Formatted chat: %s", formatted_chat.c_str());
+
   this->load_prompt(input_prompt, true, true);
 
   // show sampling info
