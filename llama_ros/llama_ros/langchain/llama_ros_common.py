@@ -28,6 +28,7 @@ from cv_bridge import CvBridge
 import numpy as np
 import urllib.request
 import cv2
+import json
 
 from langchain_core.language_models import BaseLanguageModel
 
@@ -105,6 +106,8 @@ class LlamaROSCommon(BaseLanguageModel, ABC):
         stop: Optional[List[str]] = None,
         image_url: Optional[str] = None,
         image: Optional[np.ndarray] = None,
+        tools: Optional[List[Dict]] = None,
+        tool_choice: Optional[Dict] = None,
     ) -> GenerateResponse.Result:
 
         goal = GenerateResponse.Goal()
@@ -171,7 +174,15 @@ class LlamaROSCommon(BaseLanguageModel, ABC):
         goal.sampling_config.samplers_sequence = self.samplers_sequence
 
         goal.sampling_config.grammar = self.grammar
-        goal.sampling_config.grammar_schema = self.grammar_schema
+        if tool_choice:
+            tool = tools[0]
+            tool["function"].update(tool["function"].pop("parameters"))
+
+            print(json.dumps(tool['function'], indent=4))
+            goal.sampling_config.grammar_schema = json.dumps(tool['function'])
+        else:
+            goal.sampling_config.grammar_schema = tools
+        
 
         goal.sampling_config.penalty_prompt_tokens = self.penalty_prompt_tokens
         goal.sampling_config.use_penalty_prompt_tokens = self.use_penalty_prompt_tokens

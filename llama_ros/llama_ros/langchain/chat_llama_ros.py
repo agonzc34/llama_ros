@@ -21,10 +21,24 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from typing import Any, List, Optional, Dict, Iterator
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Type,
+    Union,
+    cast,
+)
+from operator import itemgetter
 import base64
 import cv2
 import numpy as np
+from pydantic import BaseModel
 
 from llama_ros.langchain import LlamaROSCommon
 from llama_ros.llama_client_node import LlamaClientNode
@@ -36,6 +50,20 @@ from langchain.callbacks.manager import CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, AIMessage, AIMessageChunk
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
+from langchain_core.runnables import Runnable, RunnableMap, RunnablePassthrough
+from langchain_core.language_models import LanguageModelInput
+from langchain_core.utils.pydantic import is_basemodel_subclass
+from langchain_core.utils.function_calling import convert_to_openai_tool
+from langchain_core.output_parsers.base import OutputParserLike
+from langchain_core.output_parsers.openai_tools import (
+    JsonOutputKeyToolsParser,
+    PydanticToolsParser,
+    make_invalid_tool_call,
+    parse_tool_call,
+)
+
+
+import jinja2
 
 
 class ChatLlamaROS(BaseChatModel, LlamaROSCommon):
@@ -56,31 +84,23 @@ class ChatLlamaROS(BaseChatModel, LlamaROSCommon):
         image = None
 
         for message in messages:
-            role = message.type
-            if role.lower() == "human":
-                role = "user"
-
-            if type(message.content) == str:
-                chat_messages.messages.append(Message(role=role, content=message.content))
-            else:
-                for single_content in message.content:
-                    if type(single_content) == str:
-                        chat_messages.messages.append(
-                            Message(role=role, content=single_content)
-                        )
-                    elif single_content["type"] == "text":
-                        chat_messages.messages.append(
-                            Message(role=role, content=single_content["text"])
-                        )
-                    elif single_content["type"] == "image_url":
-                        image_text = single_content["image_url"]["url"]
-                        if "data:image" in image_text:
-                            image_data = image_text.split(",")[-1]
-                            decoded_image = base64.b64decode(image_data)
-                            np_image = np.frombuffer(decoded_image, np.uint8)
-                            image = cv2.imdecode(np_image, cv2.IMREAD_COLOR)
-                        else:
-                            image_url = image_text
+            role = "user" if message.type.lower() == "human" else message.type
+            
+            contents = message.content if isinstance(message.content, list) else [message.content]
+            for single_content in contents:
+                if isinstance(single_content, str):
+                    chat_messages.messages.append(Message(role=role, content=single_content))
+                elif single_content.get("type") == "text":
+                    chat_messages.messages.append(Message(role=role, content=single_content["text"]))
+                elif single_content.get("type") == "image_url":
+                    image_text = single_content["image_url"]["url"]
+                    if "data:image" in image_text:
+                        image_data = image_text.split(",")[-1]
+                        decoded_image = base64.b64decode(image_data)
+                        np_image = np.frombuffer(decoded_image, np.uint8)
+                        image = cv2.imdecode(np_image, cv2.IMREAD_COLOR)
+                    else:
+                        image_url = image_text
 
         return chat_messages, image_url, image
 

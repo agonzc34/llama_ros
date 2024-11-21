@@ -21,7 +21,23 @@
 # SOFTWARE.
 
 
-from typing import Any, Dict, List, Optional, Iterator
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Type,
+    Union,
+    cast,
+)
+from operator import itemgetter
+from pydantic import BaseModel
+
+import json
 
 from action_msgs.msg import GoalStatus
 from llama_msgs.srv import Tokenize
@@ -31,7 +47,21 @@ from llama_ros.langchain import LlamaROSCommon
 from langchain_core.outputs import GenerationChunk
 from langchain_core.language_models.llms import LLM
 from langchain.callbacks.manager import CallbackManagerForLLMRun
+from langchain_core.tools import BaseTool
+from langchain_core.messages import BaseMessage
 
+from langchain_core.runnables import Runnable, RunnableMap, RunnablePassthrough
+from langchain_core.language_models import LanguageModelInput
+from langchain_core.utils.pydantic import is_basemodel_subclass
+from langchain_core.utils.function_calling import convert_to_openai_tool
+from langchain_core.output_parsers.base import OutputParserLike
+from langchain_core.output_parsers.json import JsonOutputParser
+from langchain_core.output_parsers.openai_tools import (
+    JsonOutputKeyToolsParser,
+    PydanticToolsParser,
+    make_invalid_tool_call,
+    parse_tool_call,
+)
 
 class LlamaROS(LLM, LlamaROSCommon):
 
@@ -51,6 +81,8 @@ class LlamaROS(LLM, LlamaROSCommon):
         **kwargs: Any,
     ) -> str:
 
+        print(kwargs.get('tools'))
+
         goal = self._create_action_goal(prompt, stop, **kwargs)
 
         result, status = LlamaClientNode.get_instance().generate_response(goal)
@@ -58,6 +90,98 @@ class LlamaROS(LLM, LlamaROSCommon):
         if status != GoalStatus.STATUS_SUCCEEDED:
             return ""
         return result.response.text
+
+
+    def with_structured_output(
+        self,
+        schema: Optional[Union[Dict, Type[BaseModel]]] = None,
+        *,
+        include_raw: bool = False,
+        **kwargs: Any,
+    ) -> Runnable[LanguageModelInput, Union[Dict, BaseModel]]:
+        print('with_structured_output')
+        if kwargs:
+            raise ValueError(f"Received unsupported arguments {kwargs}")
+        is_pydantic_schema = isinstance(schema, type) and is_basemodel_subclass(schema)
+        if schema is None:
+            raise ValueError(
+                "schema must be specified when method is 'function_calling'. "
+                "Received None."
+            )
+        
+        tool_name = convert_to_openai_tool(schema)["function"]["name"]
+        tool_choice = {"type": "function", "function": {"name": tool_name}}
+        llm = self.bind_tools([schema], tool_choice=tool_choice)
+        if is_pydantic_schema:
+            print('is_pydantic_schema')
+            output_parser = JsonOutputParser()
+
+            
+        print('end with_structured_output')
+
+        if include_raw:
+            parser_assign = RunnablePassthrough.assign(
+                parsed=itemgetter("raw") | output_parser, parsing_error=lambda _: None
+            )
+            parser_none = RunnablePassthrough.assign(parsed=lambda _: None)
+            parser_with_fallback = parser_assign.with_fallbacks(
+                [parser_none], exception_key="parsing_error"
+            )
+            return RunnableMap(raw=llm) | parser_with_fallback
+        else:
+            return llm | output_parser
+
+    def bind_tools(
+        self,
+        tools: Sequence[Union[Dict[str, Any], Type[BaseModel], Callable, BaseTool]],
+        *,
+        tool_choice: Optional[Union[dict, bool, str]] = None,
+        **kwargs: Any,
+    ) -> Runnable[LanguageModelInput, BaseMessage]:
+        print('bind_tools')
+        """Bind tool-like objects to this chat model
+
+        tool_choice: does not currently support "any", "auto" choices like OpenAI
+            tool-calling API. should be a dict of the form to force this tool
+            {"type": "function", "function": {"name": <<tool_name>>}}.
+        """
+        formatted_tools = [convert_to_openai_tool(tool) for tool in tools]
+        tool_names = [ft["function"]["name"] for ft in formatted_tools]
+        if tool_choice:
+            if isinstance(tool_choice, dict):
+                if not any(
+                    tool_choice["function"]["name"] == name for name in tool_names
+                ):
+                    raise ValueError(
+                        f"Tool choice {tool_choice=} was specified, but the only "
+                        f"provided tools were {tool_names}."
+                    )
+            elif isinstance(tool_choice, str):
+                chosen = [
+                    f for f in formatted_tools if f["function"]["name"] == tool_choice
+                ]
+                if not chosen:
+                    raise ValueError(
+                        f"Tool choice {tool_choice=} was specified, but the only "
+                        f"provided tools were {tool_names}."
+                    )
+            elif isinstance(tool_choice, bool):
+                if len(formatted_tools) > 1:
+                    raise ValueError(
+                        "tool_choice=True can only be specified when a single tool is "
+                        f"passed in. Received {len(tools)} tools."
+                    )
+                tool_choice = formatted_tools[0]
+            else:
+                raise ValueError(
+                    """Unrecognized tool_choice type. Expected dict having format like 
+                    this {"type": "function", "function": {"name": <<tool_name>>}}"""
+                    f"Received: {tool_choice}"
+                )
+
+        kwargs["tool_choice"] = tool_choice
+        formatted_tools = [convert_to_openai_tool(tool) for tool in tools]
+        return super().bind(tools=formatted_tools, **kwargs)
 
     def _stream(
         self,
